@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+venv/
+.env
+
+# Uploaded/generated files
+uploads/
+documents/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
