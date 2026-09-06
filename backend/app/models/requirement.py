@@ -1,4 +1,4 @@
-from sqlalchemy import String, Text, ForeignKey
+from sqlalchemy import Column, String, Text, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -32,3 +32,5 @@ class Requirement(Base):
     mandatory: Mapped[bool] = mapped_column(
         default=True
     )
+
+    evidence_text = Column(Text, nullable=True)
