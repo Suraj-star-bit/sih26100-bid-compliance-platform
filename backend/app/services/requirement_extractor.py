@@ -1,5 +1,5 @@
 import re
-
+from app.services.tender_blocks import build_text_blocks
 
 REQUIREMENT_WORDS = [
     "must",
@@ -12,129 +12,274 @@ REQUIREMENT_WORDS = [
     "provide",
     "possess",
     "ensure",
+    "eligible",
+    "eligibility",
 ]
 
 
-def contains_requirement_word(line: str) -> bool:
+TEMPLATE_PHRASES = [
+    "[fill]",
+    "[if applicable]",
+    "[insert",
+    "[mention",
+    "[description of",
+    "[to be specified]",
+    "[xyz]",
+    "[country]",
+    "[timeframe]",
+    "tend no./ xxxx",
+]
+
+
+EXCLUDED_PHRASES = [
+    "payment of gst",
+    "gst shall be paid",
+    "gst shall be applicable",
+    "gst rate",
+    "gst cess",
+    "gst compliant bill",
+    "gst compliant invoice",
+    "tax payable",
+    "tax structure",
+    "invoice indicating",
+    "claim for payment",
+    "payment to the contractor",
+    "payable gst",
+    "payment terms",
+    "payment shall",
+]
+
+
+BIDDER_CONTEXT = [
+    "bidder",
+    "bidders",
+    "tenderer",
+    "vendor",
+    "contractor",
+    "oem",
+    "manufacturer",
+    "supplier",
+]
+NON_COMPLIANCE_REQUIREMENTS = [
+    "read the complete tender document",
+    "read the tender document",
+    "bidders must read",
+    "bidder must read",
+    "quote the prices",
+    "submit the bid before",
+    "submit your bid before",
+    "follow the instructions",
+    "fill in the form",
+    "fill the form",
+    "sign the form",
+    "download the tender document",
+]
+
+def contains_requirement_word(text: str) -> bool:
+    text = text.lower()
+
     return any(
-        re.search(rf"\b{re.escape(word)}\b", line.lower())
+        re.search(rf"\b{re.escape(word)}\b", text)
         for word in REQUIREMENT_WORDS
     )
 
 
-def is_bidder_requirement(line: str) -> bool:
-    text = line.lower()
+def contains_template_placeholder(text: str) -> bool:
+    text = text.lower()
 
-    # Reject tax/payment/invoice clauses
-    excluded_phrases = [
-        "payment of gst",
-        "gst shall be paid",
-        "gst shall be applicable",
-        "gst rate",
-        "gst cess",
-        "gst compliant bill",
-        "gst compliant invoice",
-        "tax payable",
-        "tax structure",
-        "invoice indicating",
-        "claim for payment",
-        "payment to the contractor",
-        "payable gst",
-    ]
+    return any(
+        phrase in text
+        for phrase in TEMPLATE_PHRASES
+    )
 
-    if any(phrase in text for phrase in excluded_phrases):
+
+def is_excluded_clause(text: str) -> bool:
+    text = text.lower()
+
+    return any(
+        phrase in text
+        for phrase in EXCLUDED_PHRASES
+    )
+
+
+def refers_to_bidder(text: str) -> bool:
+    text = text.lower()
+
+    return any(
+        re.search(rf"\b{re.escape(word)}\b", text)
+        for word in BIDDER_CONTEXT
+    )
+
+
+def is_requirement_candidate(text: str) -> bool:
+    if not text:
         return False
 
-    # A compliance requirement should normally refer to the bidder/vendor
-    bidder_context = [
-        "bidder",
-        "bidders",
-        "tenderer",
-        "vendor",
-        "contractor",
-        "oem",
-        "documents to be submitted",
-    ]
-
-    return any(word in text for word in bidder_context)
-
-
-def get_mandatory(line: str) -> bool:
-    text = line.lower()
-
-    if "if applicable" in text:
+    if is_weak_requirement_block(text):
         return False
 
-    strong_words = [
+    if contains_template_placeholder(text):
+        return False
+
+    if is_excluded_clause(text):
+        return False
+
+    if is_non_compliance_requirement(text):
+        return False
+
+    if not contains_requirement_word(text):
+        return False
+
+    if not refers_to_bidder(text):
+        return False
+
+    return True
+
+
+def get_mandatory(text: str) -> bool:
+
+    text = text.lower()
+
+    mandatory_words = [
         "must",
         "shall",
         "mandatory",
         "required",
     ]
 
+    optional_phrases = [
+        "if applicable",
+        "where applicable",
+        "may submit",
+        "optional",
+    ]
+
+    if any(phrase in text for phrase in optional_phrases):
+        return False
+
     return any(
         re.search(rf"\b{re.escape(word)}\b", text)
-        for word in strong_words
+        for word in mandatory_words
     )
 
 
+def detect_requirement_type(text: str) -> str:
+
+    text = text.lower()
+
+    if re.search(r"\bgst(?:in)?\b|gst registration|gst certificate", text):
+        return "gst"
+
+    if re.search(r"\bpan\b|pan card", text):
+        return "pan"
+
+    if re.search(r"\budyam\b|\bmsme\b", text):
+        return "udyam_msme"
+
+    if re.search(r"\boem\b|manufacturer authorization", text):
+        return "oem_authorization"
+
+    if re.search(r"turnover|annual turnover", text):
+        return "turnover"
+
+    if re.search(r"similar work|similar project|experience", text):
+        return "experience"
+
+    if re.search(r"technical specification|technical requirement", text):
+        return "technical"
+
+    return "other"
+
+
+def extract_required_value(text: str) -> str | None:
+
+    turnover_match = re.search(
+        r"(?:turnover|annual turnover)"
+        r".{0,150}?"
+        r"(?:₹|rs\.?|inr)?\s*"
+        r"([\d,.]+)\s*"
+        r"(crore|crores|lakh|lakhs)?",
+        text,
+        re.IGNORECASE,
+    )
+
+    if turnover_match:
+
+        value = turnover_match.group(1)
+
+        unit = turnover_match.group(2)
+
+        if unit:
+            value += f" {unit}"
+
+        return value
+
+    return None
+
+
+def build_candidate(text: str, page_number: int):
+
+    if not is_requirement_candidate(text):
+        return None
+
+    return {
+        "requirement_type": detect_requirement_type(text),
+        "description": text.strip(),
+        "required_value": extract_required_value(text),
+        "mandatory": get_mandatory(text),
+        "source_page": page_number,
+    }
 def extract_requirements(pages):
 
     requirements = []
-
-    patterns = {
-        "turnover": r"(?:turnover|annual turnover).*?(?:₹|rs\.?|inr)?\s*([\d,.]+)\s*(crore|lakh)?",
-        "gst": r"\bGST(?:IN)?\b",
-        "pan": r"\bPAN\b",
-        "udyam": r"\bUdyam\b|\bMSME\b",
-        "oem": r"\bOEM\b|manufacturer authorization",
-    }
 
     for page in pages:
 
         page_number = page["page_number"]
 
-        for line in page["text"].splitlines():
+        # Convert raw PDF lines into meaningful text blocks
+        blocks = build_text_blocks(page["text"])
 
-            line = line.strip()
+        for block in blocks:
 
-            if not line:
-                continue
+            candidate = build_candidate(
+                block,
+                page_number
+            )
 
-            if not contains_requirement_word(line):
-                continue
-
-            if not is_bidder_requirement(line):
-                continue
-
-            for requirement_type, pattern in patterns.items():
-
-                match = re.search(
-                    pattern,
-                    line,
-                    re.IGNORECASE
-                )
-
-                if not match:
-                    continue
-
-                required_value = None
-
-                if requirement_type == "turnover":
-                    value = match.group(1)
-
-                    if value and re.search(r"\d", value):
-                        required_value = value
-
-                        if match.group(2):
-                            required_value += f" {match.group(2)}"
-
-                requirements.append({
-                    "requirement_type": requirement_type,
-                    "description": line,
-                    "required_value": required_value,
-                    "mandatory": get_mandatory(line),
-                    "source_page": page_number
-                })
+            if candidate:
+                requirements.append(candidate)
 
     return requirements
+
+def is_non_compliance_requirement(text: str) -> bool:
+    text = text.lower()
+    return any(
+        phrase in text
+        for phrase in NON_COMPLIANCE_REQUIREMENTS
+    )
+
+def is_weak_requirement_block(text: str) -> bool:
+    words = text.split()
+
+    if len(words) < 8:
+        return True
+
+    weak_phrases = [
+        "the tender document",
+        "tender document",
+        "basic tender details",
+        "government of india",
+        "ministry of",
+        "department of",
+    ]
+
+    text_lower = text.lower().strip()
+
+    if any(
+        phrase in text_lower
+        for phrase in weak_phrases
+    ):
+        return True
+
+    return False
