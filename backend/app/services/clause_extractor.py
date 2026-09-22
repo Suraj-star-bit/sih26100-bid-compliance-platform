@@ -50,16 +50,13 @@ def is_heading(line: str) -> bool:
 
 
 def extract_clauses(page_number: int, page_text: str) -> list[dict]:
-
-    # Normalize whitespace
     text = re.sub(r"\s+", " ", page_text).strip()
 
-    # Split before numbered clauses such as:
-    # 2. Tender documents...
-    # 3. Therefore...
-    # 7.2 Qualification...
+    if is_table_of_contents(text):
+        return []
+
     parts = re.split(
-        r"(?=\b\d+(?:\.\d+){0,5}\.\s+)",
+        r"(?=\b\d+(?:\.\d+)+\s+|\b\d+\.\s+)",
         text
     )
 
@@ -72,19 +69,26 @@ def extract_clauses(page_number: int, page_text: str) -> list[dict]:
             continue
 
         match = re.match(
-            r"^(\d+(?:\.\d+){0,5})\.\s+",
+            r"^(\d+(?:\.\d+){0,5})(?:\.)?\s+",
             part
         )
 
         if match:
             clause_number = match.group(1)
-        else:
-            clause_number = None
 
-        clauses.append({
-            "page": page_number,
-            "clause": clause_number,
-            "text": part,
-        })
+            clauses.append({
+                "page": page_number,
+                "clause": clause_number,
+                "text": part,
+            })
 
     return clauses
+
+def is_table_of_contents(text: str) -> bool:
+    text_lower = text.lower()
+
+    return (
+        "table of contents" in text_lower
+        and "section i" in text_lower
+        and "section ii" in text_lower
+    )

@@ -135,7 +135,6 @@ def is_requirement_candidate(text: str) -> bool:
 
     return True
 
-
 def get_mandatory(text: str) -> bool:
 
     text = text.lower()
@@ -263,23 +262,6 @@ def is_weak_requirement_block(text: str) -> bool:
     words = text.split()
 
     if len(words) < 8:
-        return True
-
-    weak_phrases = [
-        "the tender document",
-        "tender document",
-        "basic tender details",
-        "government of india",
-        "ministry of",
-        "department of",
-    ]
-
-    text_lower = text.lower().strip()
-
-    if any(
-        phrase in text_lower
-        for phrase in weak_phrases
-    ):
         return True
 
     return False
