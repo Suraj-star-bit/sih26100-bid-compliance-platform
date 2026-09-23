@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import String, DateTime, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, Text, ForeignKey, DateTime
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
 
@@ -31,4 +31,9 @@ class Document(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow
+    )
+
+    evidence = relationship(
+        "ExtractedEvidence",
+        back_populates="document"
     )
