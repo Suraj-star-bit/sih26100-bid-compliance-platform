@@ -52,6 +52,9 @@ def is_heading(line: str) -> bool:
 def extract_clauses(page_number: int, page_text: str) -> list[dict]:
     text = re.sub(r"\s+", " ", page_text).strip()
 
+    if not text:
+        return []
+
     if is_table_of_contents(text):
         return []
 
@@ -79,6 +82,13 @@ def extract_clauses(page_number: int, page_text: str) -> list[dict]:
             clauses.append({
                 "page": page_number,
                 "clause": clause_number,
+                "text": part,
+            })
+
+        else:
+            clauses.append({
+                "page": page_number,
+                "clause": None,
                 "text": part,
             })
 

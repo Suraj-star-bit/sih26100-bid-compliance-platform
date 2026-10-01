@@ -76,7 +76,7 @@ def extract_tender_requirements(
 
     pages = []
 
-    for page_number, page in enumerate(pdf[:10], start=1):
+    for page_number, page in enumerate(pdf[40:45], start=41):
         text = page.get_text().strip()
 
         if not text:
@@ -92,39 +92,29 @@ def extract_tender_requirements(
         })
     pdf.close()
 
-    requirements = extract_requirements_with_ai(pages)
+    requirements = extract_requirements_with_ai(
+        pages,
+        tender.id,
+        db
+    )
 
-    saved_requirements = []
-
-    for requirement in requirements:
-        requirement = requirement.model_dump()
-        existing = db.query(Requirement).filter(
-            Requirement.tender_id == tender.id,
-            Requirement.requirement_type == requirement["requirement_type"],
-            Requirement.description == requirement["description"],
-            Requirement.source_page == requirement["source_page"]
-        ).first()
-
-        if existing:
-            continue
-
-        new_requirement = Requirement(
-            tender_id=tender.id,
-            requirement_type=requirement["requirement_type"],
-            description=requirement["description"],
-            required_value=requirement["required_value"],
-            mandatory=requirement["mandatory"],
-            source_page=requirement["source_page"],
-            evidence_text=requirement["evidence_text"]
-        )
-
-        db.add(new_requirement)
-        saved_requirements.append(new_requirement)
+    saved_requirements = requirements
 
     db.commit()
 
     return {
-        "tender_id": tender.id,
-        "requirements_found": len(saved_requirements),
-        "requirements": requirements
-    }
+    "tender_id": tender.id,
+    "requirements_found": len(saved_requirements),
+    "requirements": [
+        {
+            "id": requirement.id,
+            "requirement_type": requirement.requirement_type,
+            "description": requirement.description,
+            "required_value": requirement.required_value,
+            "mandatory": requirement.mandatory,
+            "source_page": requirement.source_page,
+            "evidence_text": requirement.evidence_text,
+        }
+        for requirement in saved_requirements
+    ]
+}

@@ -5,7 +5,15 @@ import ollama
 
 from app.schemas.requirement import ExtractedRequirement
 from app.services.clause_extractor import extract_clauses
-from app.services.requirement_extractor import is_requirement_candidate
+from app.services.requirement_extractor import (
+    is_requirement_candidate,
+    is_valid_ai_requirement,
+    is_useful_ai_requirement,
+    split_combined_requirement,
+    is_duplicate_requirement,
+)
+
+from app.models.requirement import Requirement
 
 
 MODEL = "llama3.2:latest"
@@ -121,8 +129,22 @@ def extract_explicit_value(text: str) -> str | None:
 
 def clean_required_value(
     ai_value: str | None,
-    clause_text: str
+    clause_text: str,
+    requirement_type: str | None = None
 ) -> str | None:
+
+    requirement_type = (requirement_type or "").strip().lower()
+
+    non_numeric_types = {
+        "registration",
+        "certificate",
+        "declaration",
+        "eligibility",
+        "document_submission",
+    }
+
+    if requirement_type in non_numeric_types:
+        return None
 
     explicit_value = extract_explicit_value(clause_text)
 
@@ -134,6 +156,10 @@ def clean_required_value(
 
     normalized_ai_value = normalize(ai_value)
     normalized_clause = normalize(clause_text)
+
+    # Reject obviously invalid AI values
+    if normalized_ai_value in {"", ",", ".", ":", "-", "none", "null"}:
+        return None
 
     if normalized_ai_value in normalized_clause:
         return ai_value.strip()
@@ -167,8 +193,11 @@ def improve_evidence(
 
     return ai_evidence.strip()
 
-
-def extract_requirements_with_ai(pages):
+def extract_requirements_with_ai(
+    pages,
+    tender_id,
+    db
+):
 
     results = []
 
@@ -179,7 +208,11 @@ def extract_requirements_with_ai(pages):
             page["text"]
         )
 
-        candidate_clauses = clauses
+        candidate_clauses = [
+    clause
+        for clause in clauses
+        if is_requirement_candidate(clause["text"])
+    ]
 
         for clause in candidate_clauses:
 
@@ -235,20 +268,81 @@ financial
 experience
 technical
 document_submission
-other
 
 For every requirement:
 
 1. Write a short, specific description.
 
+IMPORTANT:
+Extract each independently checkable bidder obligation as ONE requirement.
+
+Do NOT create separate requirements for individual words,
+documents, or pieces of evidence that belong to the same obligation.
+
+For example, if a clause says:
+
+"Bidder should be registered under GST and furnish GSTIN
+and GST Registration Certificate."
+
+return ONE requirement:
+
+- Type: registration
+- Description: Bidder must be registered under GST and furnish GSTIN and GST Registration Certificate.
+
+Do NOT create separate requirements for:
+- GST registration
+- GSTIN
+- GST Registration Certificate
+
+because these are parts of the same bidder obligation.
+
+However, if a clause contains genuinely independent obligations,
+extract them separately.
+
+For example, if a clause says the bidder must:
+- have an annual turnover of Rs. 10 Crore
+- possess valid GST registration
+
+return TWO requirements.
+
+Similarly, if a clause independently requires:
+- PAN submission
+- OEM authorization
+
+return TWO requirements.
+
+A document, certificate, number, or declaration should NOT become
+a separate requirement if it is only supporting evidence for
+another requirement.
+
+Each requirement should represent something that can be evaluated
+independently as:
+
+COMPLIANT
+NON_COMPLIANT
+PARTIALLY_COMPLIANT
+INSUFFICIENT_EVIDENCE
+
 2. Identify whether it is mandatory.
 
 3. Extract required_value only when the value is explicitly
-   written in THIS clause.
+    written in THIS clause.
 
-4. evidence_text must contain the exact supporting statement
-   from THIS clause.
+4. evidence_text must be an EXACT VERBATIM substring copied
+    from THIS clause.
 
+    The evidence_text MUST literally appear in the Tender clause text.
+
+    NEVER use placeholder text such as:
+    "exact text from tender"
+    "exact supporting statement"
+    "string"
+    or any similar placeholder.
+
+    Copy the actual words from the Tender clause.
+    Do NOT paraphrase.
+    Do NOT summarize.
+    Do NOT invent.
 IMPORTANT:
 
 Never invent a value.
@@ -297,7 +391,7 @@ Return ONLY valid JSON:
             "description": "string",
             "required_value": null,
             "mandatory": true,
-            "evidence_text": "exact text from tender"
+            "evidence_text": "Bidder shall submit the required document"
         }}
     ]
 }}
@@ -343,76 +437,142 @@ Tender clause text:
 
             for requirement in extracted:
 
-                evidence_text = improve_evidence(
-                    requirement.get("evidence_text"),
-                    clause_text
-                )
-                description = requirement.get("description")
-                if not description or description.strip().lower() == "string":
-                    description = evidence_text
-
-                ai_evidence = requirement.get("evidence_text")
-
-                if not ai_evidence:
-                    continue
-
-                normalized_clause = normalize(clause_text)
-                normalized_evidence = normalize(ai_evidence)
-
-                if normalized_evidence not in normalized_clause:
-                    continue
-
-                # Use the original clause as the authoritative evidence.
-                evidence_text = clause_text.strip()
-
-                required_value = clean_required_value(
-                    requirement.get("required_value"),
-                    clause_text
+                split_requirements = split_combined_requirement(
+                    requirement
                 )
 
-                description = requirement.get("description")
+                for requirement in split_requirements:
 
-                if not description or description.strip().lower() == "string":
-                    description = evidence_text
+                    if not is_valid_ai_requirement(requirement):
+                        print(
+                            f"Rejected invalid AI requirement on "
+                            f"page {page['page_number']}"
+                        )
+                        continue
+                    if not is_useful_ai_requirement(requirement):
+                        print(
+                            f"Rejected non-compliance AI requirement on page {page['page_number']}"
+                        )
+                        continue
 
-                requirement["description"] = description.strip()
-                requirement["evidence_text"] = evidence_text
-                requirement["required_value"] = required_value
+                    ai_evidence = requirement.get("evidence_text")
 
-                if not evidence_text:
-                    print(
-                        f"Rejected unsupported evidence on "
-                        f"page {page['page_number']}, "
-                        f"clause {clause['clause']}"
-                    )
-                    continue
+                    # Ollama sometimes omits evidence_text.
+                    # Use the AI description as the evidence candidate in that case.
+                    if not ai_evidence:
+                        ai_evidence = requirement.get("description")
 
-                required_value = clean_required_value(
-                    requirement.get("required_value"),
-                    clause_text
-                )
+                    if not ai_evidence:
+                        print(
+                            f"Rejected requirement without evidence on "
+                            f"page {page['page_number']}"
+                        )
+                        continue
 
-                requirement["required_value"] = required_value
-                requirement["evidence_text"] = evidence_text
-
-                requirement["source_page"] = (
-                    page["page_number"]
-                )
-
-                requirement["source_section"] = (
-                    f"Clause {clause['clause']}"
-                    if clause["clause"]
-                    else None
-                )
-
-                try:
-                    results.append(
-                        ExtractedRequirement(**requirement)
+                    # Verify that the AI evidence is actually supported
+                    # by the original tender clause.
+                    grounded_evidence = improve_evidence(
+                        ai_evidence,
+                        clause_text
                     )
 
-                except Exception as e:
-                    print(
-                        f"Invalid requirement skipped: {e}"
+                    if not grounded_evidence:
+                        print(
+                            f"Rejected unsupported evidence on "
+                            f"page {page['page_number']}, "
+                            f"clause {clause['clause']}"
+                        )
+                        continue
+
+                    requirement["evidence_text"] = grounded_evidence
+
+                    # Ollama may also omit mandatory.
+                    # Tender compliance requirements are mandatory by default.
+                    if "mandatory" not in requirement:
+                        requirement["mandatory"] = True
+
+                    # Keep the AI evidence only if it is grounded in the original clause.
+                    evidence_text = requirement.get("evidence_text")
+
+                    if not evidence_text:
+                        print(
+                            f"Rejected unsupported evidence on "
+                            f"page {page['page_number']}, "
+                            f"clause {clause['clause']}"
+                        )
+                        continue
+
+                    description = requirement.get("description")
+
+                    if (
+                        not description
+                        or description.strip().lower() == "string"
+                    ):
+                        description = evidence_text
+
+                    required_value = clean_required_value(
+                        requirement.get("required_value"),
+                        clause_text,
+                        requirement.get("requirement_type")
                     )
 
-    return results
+                    requirement["description"] = description.strip()
+                    requirement["evidence_text"] = evidence_text
+                    requirement["required_value"] = required_value
+
+                    requirement["source_page"] = (
+                        page["page_number"]
+                    )
+
+                    requirement["source_section"] = (
+                        f"Clause {clause['clause']}"
+                        if clause["clause"]
+                        else None
+                    )
+
+                    if is_duplicate_requirement(
+                        requirement,
+                        results
+                    ):
+                        print(
+                            f"Duplicate requirement skipped on "
+                            f"page {page['page_number']}"
+                        )
+                        continue
+
+                    try:
+                        db_requirement = Requirement(
+                            tender_id=tender_id,
+                            requirement_type=requirement[
+                                "requirement_type"
+                            ],
+                            description=requirement[
+                                "description"
+                            ],
+                            required_value=requirement[
+                                "required_value"
+                            ],
+                            source_page=requirement[
+                                "source_page"
+                            ],
+                            mandatory=requirement[
+                                "mandatory"
+                            ],
+                            evidence_text=requirement[
+                                "evidence_text"
+                            ],
+                        )
+
+                        db.add(db_requirement)
+                        db.flush()
+
+                        results.append(db_requirement)
+
+                    except Exception as e:
+                        print(
+                            f"Failed to save requirement: {e}"
+                        )
+
+                db.commit()
+
+        return results
