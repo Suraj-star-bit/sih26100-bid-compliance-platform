@@ -1,5 +1,5 @@
 from sqlalchemy import String, Text, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
 
@@ -28,4 +28,9 @@ class ExtractedEvidence(Base):
 
     confidence: Mapped[float | None] = mapped_column(
         nullable=True
+    )
+
+    document = relationship(
+        "Document",
+        back_populates="evidence"
     )

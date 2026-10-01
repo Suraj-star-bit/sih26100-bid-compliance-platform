@@ -32,21 +32,86 @@ TEMPLATE_PHRASES = [
 
 
 EXCLUDED_PHRASES = [
-    "payment of gst",
-    "gst shall be paid",
-    "gst shall be applicable",
-    "gst rate",
-    "gst cess",
-    "gst compliant bill",
-    "gst compliant invoice",
-    "tax payable",
-    "tax structure",
-    "invoice indicating",
-    "claim for payment",
-    "payment to the contractor",
-    "payable gst",
+    # Pricing / financial instructions
+    "price schedule",
+    "price quoted",
+    "prices quoted",
+    "quoted price",
+    "bid price",
+    "bid prices",
+    "price variation",
+    "price components",
+    "unit prices",
+    "total bid prices",
+    "financial bid",
+    "financial bids",
     "payment terms",
     "payment shall",
+    "advance payment",
+    "payment to the contractor",
+    "payable to the contractor",
+
+    # Tax / GST pricing — NOT GST registration
+    "gst rate",
+    "gst rates",
+    "gst amount",
+    "gst cess",
+    "tax structure",
+    "tax payable",
+    "tax rate",
+    "tax rates",
+    "hsn code",
+    "input credit",
+    "customs duty",
+
+    # Tender process / administrative instructions
+    "download the tender",
+    "downloading the tender",
+    "clarification of the tender",
+    "seek clarification",
+    "pre-bid conference",
+    "pre bid conference",
+    "corrigenda",
+    "addenda",
+    "deadline for availability",
+    "deadline for clarification",
+
+    # General bid preparation
+    "cost of bidding",
+    "costs associated with",
+    "costs incurred in connection",
+    "language of the bid",
+    "alternative bids",
+    "alternative offers",
+    "multiple bids",
+
+    "quote quantities",
+    "quote quantities / prices",
+    "quantities / prices",
+    "quoted in numerals",
+    "quoted in words",
+    "visit the site",
+    "visit the site / local conditions",
+    "familiarise himself with the site",
+    "familiarize himself with the site",
+]
+
+
+NON_COMPLIANCE_REQUIREMENTS = [
+    "read the complete tender document",
+    "read the tender document",
+    "bidders must read",
+    "bidder must read",
+    "submit the bid before",
+    "submit your bid before",
+    "follow the instructions",
+    "fill in the form",
+    "fill the form",
+    "sign the form",
+    "download the tender document",
+    "download tender document",
+    "seek clarification",
+    "attend the pre-bid conference",
 ]
 
 
@@ -59,6 +124,10 @@ BIDDER_CONTEXT = [
     "oem",
     "manufacturer",
     "supplier",
+    "pan",
+    "authorization certificate",
+    "authorization",
+    "certificate",
 ]
 NON_COMPLIANCE_REQUIREMENTS = [
     "read the complete tender document",
@@ -95,6 +164,12 @@ def contains_template_placeholder(text: str) -> bool:
 
 def is_excluded_clause(text: str) -> bool:
     text = text.lower()
+
+    # GST registration is a genuine bidder compliance requirement.
+    # Do not reject the whole clause just because the surrounding
+    # GST section also contains tax/pricing information.
+    if "gst registration" in text or "gstin" in text:
+        return False
 
     return any(
         phrase in text
@@ -135,6 +210,204 @@ def is_requirement_candidate(text: str) -> bool:
 
     return True
 
+ALLOWED_AI_TYPES = {
+    "eligibility",
+    "registration",
+    "certificate",
+    "declaration",
+    "financial",
+    "turnover",
+    "experience",
+    "technical",
+    "document_submission",
+}
+
+
+INVALID_REQUIREMENT_PHRASES = [
+    "read the complete tender document",
+    "read the tender document",
+    "basic tender details",
+    "provide basic details",
+    "must provide basic tender details",
+    "must read the complete",
+    "criteria that a bidder must meet",
+    "bidders must meet the eligibility criteria",
+]
+
+
+def is_valid_ai_requirement(requirement: dict) -> bool:
+    requirement_type = (
+        requirement.get("requirement_type") or ""
+    ).strip().lower()
+
+    description = (
+        requirement.get("description") or ""
+    ).strip().lower()
+
+    evidence_text = (
+        requirement.get("evidence_text") or ""
+    ).strip()
+
+    if requirement_type not in ALLOWED_AI_TYPES:
+        return False
+
+    if not description:
+        return False
+
+    if not evidence_text:
+        evidence_text = description
+
+    if any(
+        phrase in description
+        for phrase in INVALID_REQUIREMENT_PHRASES
+    ):
+        return False
+
+    return True
+
+GST_NON_COMPLIANCE_PHRASES = [
+    "gst cess",
+    "payable gst",
+    "gst under the rcm",
+    "rcm",
+    "gst payable",
+    "gst rate",
+    "gst rates",
+    "tax structure",
+    "tax payable",
+    "tax rate",
+]
+
+
+def is_useful_ai_requirement(requirement: dict) -> bool:
+    description = (
+        requirement.get("description") or ""
+    ).strip().lower()
+
+    evidence = (
+        requirement.get("evidence_text") or ""
+    ).strip().lower()
+
+    combined = f"{description} {evidence}"
+
+    if any(phrase in description for phrase in GST_NON_COMPLIANCE_PHRASES):
+        return False
+
+    if any(phrase in description for phrase in [
+        "procuring entity's state-wise gstin",
+        "procuring entity gstin",
+    ]):
+        return False
+
+    if "gst cess" in combined and "registration" not in combined:
+        return False
+
+    if "gst payable" in combined and "registration" not in combined:
+        return False
+
+    return True
+
+def normalize_requirement_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def is_duplicate_requirement(
+    requirement: dict,
+    existing_requirements: list
+) -> bool:
+
+    description = normalize_requirement_text(
+        requirement.get("description") or ""
+    )
+
+    if not description:
+        return False
+
+    for existing in existing_requirements:
+
+        existing_description = normalize_requirement_text(
+            existing.description
+        )
+
+        if description == existing_description:
+            return True
+
+    return False
+
+
+def split_combined_requirement(requirement: dict) -> list[dict]:
+
+    description = requirement.get("description") or ""
+
+    protected_description = re.sub(
+        r"\bRs\.",
+        "Rs",
+        description,
+        flags=re.IGNORECASE
+    )
+
+    sentences = re.split(
+        r"(?<=[.!?])\s+",
+        protected_description.strip()
+    )
+
+    results = []
+
+    for sentence in sentences:
+
+        sentence = sentence.strip()
+
+        if not sentence:
+            continue
+
+        sentence = re.sub(
+            r"\bRs(?=\s)",
+            "Rs.",
+            sentence,
+            flags=re.IGNORECASE
+        )
+
+        lower_sentence = sentence.lower()
+
+        new_requirement = requirement.copy()
+        new_requirement["description"] = sentence
+
+        if "gst registration" in lower_sentence:
+            new_requirement["requirement_type"] = "registration"
+            new_requirement["required_value"] = None
+
+        elif "gstin" in lower_sentence:
+            new_requirement["requirement_type"] = "registration"
+            new_requirement["required_value"] = None
+
+        elif "oem authorization" in lower_sentence:
+            new_requirement["requirement_type"] = "certificate"
+            new_requirement["required_value"] = None
+
+        elif (
+            "annual turnover" in lower_sentence
+            or "average annual turnover" in lower_sentence
+            or "minimum turnover" in lower_sentence
+        ):
+            new_requirement["requirement_type"] = "turnover"
+
+        elif (
+            "turnover" in lower_sentence
+            and any(
+                symbol in lower_sentence
+                for symbol in [">=", ">", "at least", "minimum", "not less than", "rs."]
+            )
+        ):
+            new_requirement["requirement_type"] = "turnover"
+
+        else:
+            continue
+
+        results.append(new_requirement)
+
+    return results if results else [requirement]
 
 def get_mandatory(text: str) -> bool:
 
@@ -262,24 +535,7 @@ def is_non_compliance_requirement(text: str) -> bool:
 def is_weak_requirement_block(text: str) -> bool:
     words = text.split()
 
-    if len(words) < 8:
-        return True
-
-    weak_phrases = [
-        "the tender document",
-        "tender document",
-        "basic tender details",
-        "government of india",
-        "ministry of",
-        "department of",
-    ]
-
-    text_lower = text.lower().strip()
-
-    if any(
-        phrase in text_lower
-        for phrase in weak_phrases
-    ):
+    if len(words) < 4:
         return True
 
     return False
